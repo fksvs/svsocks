@@ -1,0 +1,8 @@
+# ignore swap files that vim creates
+*.swp
+
+# ignore object files
+*.o
+
+# ignore executables
+*.out
