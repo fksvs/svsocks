@@ -8,6 +8,7 @@
 #include <errno.h>
 #include <syslog.h>
 #include <pthread.h>
+#include <sys/resource.h>
 #include <sys/epoll.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -34,6 +35,7 @@ uint8_t ipv4_connect(int *hostfd, char *buffer)
 	uint32_t dst_addr;
 	uint16_t dst_port;
 
+	/* | dst.addr (4 octets) | dst.port (2 octets) |*/
 	memcpy(&dst_addr, &buffer[4], 4);
 	memcpy(&dst_port, &buffer[8], 2);
 
@@ -43,20 +45,25 @@ uint8_t ipv4_connect(int *hostfd, char *buffer)
 	host.sin_addr.s_addr = dst_addr;
 
 	if ((*hostfd = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
+		/* general socks server failure */
 		return 0x01;
 	}
 	if (connect(*hostfd, (struct sockaddr *)&host, sizeof(struct sockaddr_in)) == -1) {
 		int err = errno;
 		switch (err) {
 		case ECONNREFUSED:
+			/* conncetion refused */
 			return 0x05;
 		case ENETUNREACH:
+			/* network unreachable */
 			return 0x03;
 		default:
+			/* general socks server failure */
 			return 0x01;
 		}
 	}
 
+	/* success */
 	return 0x00;
 }
 
@@ -67,6 +74,7 @@ uint8_t domain_connect(int *hostfd, char *buffer)
 	uint16_t dst_port;
 	char port_addr[255];
 
+	/* | domain name length (1 octet) | domain name (variable) | dst.port (2 octets) */
 	memset(domain_name, 0, 255);
 	domain_len = buffer[4];
 	memcpy(domain_name, &buffer[5], domain_len);
@@ -81,11 +89,13 @@ uint8_t domain_connect(int *hostfd, char *buffer)
 	hint.ai_protocol = 0;
 
 	if (getaddrinfo((const char *)domain_name, port_addr, &hint, &result) != 0) {
+		/* general socks server failure */
 		return 0x01;
 	}
 	for (ptr = result; ptr != NULL; ptr = ptr->ai_next) {
 		if ((*hostfd = socket(ptr->ai_family, ptr->ai_socktype,
 					ptr->ai_protocol)) == -1) {
+			/* general socks server failure */
 			reply = 0x01;
 			continue;
 		}
@@ -95,17 +105,21 @@ uint8_t domain_connect(int *hostfd, char *buffer)
 
 			switch (err) {
 			case ECONNREFUSED:
+				/* connection refused */
 				reply = 0x05;
 				break;
 			case ENETUNREACH:
+				/* network unreachable */
 				reply = 0x03;
 				break;
 			default:
+				/* general socks server failure */
 				reply = 0x01;
 				break;
 			}
 			continue;
 		} else {
+			/* success */
 			reply = 0x00;
 			break;
 		}
@@ -121,6 +135,7 @@ uint8_t ipv6_connect(int *hostfd, char *buffer)
 	uint8_t dst_addr[16];
 	uint16_t dst_port;
 
+	/* | dst.addr (16 octets) | dst.port (2 octets) |*/
 	memcpy(&dst_addr, &buffer[4], 16);
 	memcpy(&dst_port, &buffer[20], 2);
 
@@ -130,20 +145,25 @@ uint8_t ipv6_connect(int *hostfd, char *buffer)
 	memcpy(&host.sin6_addr.s6_addr, dst_addr, 16);
 
 	if ((*hostfd = socket(AF_INET6, SOCK_STREAM, 0)) == -1) {
+		/* general socks server failure */
 		return 0x01;
 	}
 	if (connect(*hostfd, (struct sockaddr *)&host, sizeof(struct sockaddr_in6)) == -1) {
 		int err = errno;
 		switch (err) {
 		case ECONNREFUSED:
+			/* connection refused */
 			return 0x05;
 		case ENETUNREACH:
+			/* network unreachable */
 			return 0x03;
 		default:
+			/* general socks server failure */
 			return 0x01;
 		}
 	}
 
+	/* success */
 	return 0x00;
 }
 
@@ -158,21 +178,25 @@ int method_negotiation(int clientfd)
 		return -1;
 	}
 
+
+	/* | version | nmethods | methods (1 to 255) |*/
+	/* socks version should be 0x05 for socks5 */
 	version = buffer[0];
 	if (version != 0x05) {
 		return -1;
 	}
-
 	nmethods = buffer[1];
 	memcpy(methods, &buffer[2], nmethods);
 
 	for (i = 0; i < nmethods; i++) {
 		if (methods[i] == 0x00) {
+			/* no authentication */
 			choosen_method = 0x00;
 			break;
 		}
 	}
 
+	/* | version | method | */
 	memset(buffer, 0, BUFF_SIZE);
 	buffer[0] = 0x05;
 	buffer[1] = choosen_method;
@@ -181,6 +205,7 @@ int method_negotiation(int clientfd)
 	if (total == -1 || total != 2) {
 		return -1;
 	}
+	/* no acceptable methods, close conncetion */
 	if (choosen_method == 0xFF) {
 		return -1;
 	}
@@ -199,38 +224,48 @@ int process_request(int clientfd)
 		return -1;
 	}
 
+	/* | ver | cmd | rsv | atype | dst.addr | dst.port | */
+	/* socks version should be 0x05 for socks5 */
 	version = buffer[0];
 	if (version != 0x05) {
 		return -1;
 	}
-
 	command = buffer[1];
 	atype = buffer[3];
 
+	/* CONNECT */
 	if (command == 0x01) {
 		switch (atype) {
 		case 0x01:
+			/* IPv4 address */
 			reply = ipv4_connect(&hostfd, buffer);
 			break;
 		case 0x03:
+			/* domain name address*/
 			reply = domain_connect(&hostfd, buffer);
 			break;
 		case 0x04:
+			/* IPv6 address */
 			reply = ipv6_connect(&hostfd, buffer);
 			break;
 		default:
+			/* address type not supported */
 			reply = 0x08;
 			break;
 		}
 	} else {
+		/* command not supported */
 		reply = 0x07;
 	}
 
+	/* | ver | rep | rsv | atype | bnd.addr | bnd.port | */
 	buffer[1] = reply;
 	total = send(clientfd, buffer, total, 0);
 	if (total == -1) {
 		return -1;
 	}
+
+	/* if not succeeded */
 	if (reply != 0x00) {
 		return -1;
 	}
@@ -247,13 +282,10 @@ int log_session(int clientfd, int hostfd)
 	char client_ip[INET6_ADDRSTRLEN], host_ip[INET6_ADDRSTRLEN];
 	
 	if (getpeername(clientfd, (struct sockaddr *)&client_addr, &client_len) == -1) {
-		syslog(LOG_ERR, "getpeername error [client][%d] : %s",
-			__LINE__, strerror(errno));
 		return -1;
 	}
 	if (getpeername(hostfd, (struct sockaddr *)&host_addr, &host_len) == -1) {
-		syslog(LOG_ERR, "getpeername error [host][%d] : %s",
-			__LINE__, strerror(errno));
+		return -1;
 	}
 
 	if (host_addr.ss_family == AF_INET) {
@@ -405,8 +437,11 @@ int handle_client(int clientfd)
 		close(clientfd);
 		return -1;
 	}
-	log_session(clientfd, hostfd);
-
+	if (log_session(clientfd, hostfd) == -1) {
+		close(clientfd);
+		close(hostfd);
+		return -1;
+	}
 	if ((epollfd = init_session(clientfd, hostfd)) == -1) {
 		close(clientfd);
 		close(hostfd);
@@ -501,13 +536,21 @@ void init_socket(char *listen_addr, int listen_port)
 	}
 }
 
-void handle_signal(int signum)
+void signal_exit(int signum)
 {
 	long i;
+	struct rlimit rlim;
 
-	syslog(LOG_INFO, "closing svsocks.");
+	syslog(LOG_INFO, "closing svsocks, signal = %d", signum);
+	closelog();
 
-	for (i = 0; i < sysconf(_SC_OPEN_MAX); i++) {
+	/* get the resource limit for max number of file descriptors */
+	if (getrlimit(RLIMIT_NOFILE, &rlim) == -1) {
+		exit(EXIT_FAILURE);
+	}
+
+	/* close all open file descriptors */
+	for (i = 0; i < rlim.rlim_max; i++) {
 		close(i);
 	}
 	exit(EXIT_SUCCESS);
@@ -518,8 +561,7 @@ void init_signal()
 	struct sigaction act;
 
 	memset(&act, 0, sizeof(struct sigaction));
-	act.sa_handler = &handle_signal;
-
+	act.sa_handler = &signal_exit;
 	if (sigaction(SIGINT, &act, NULL) == -1) {
 		syslog(LOG_ERR, "sigaction error [%d] : %s", __LINE__, strerror(errno));
 		exit(EXIT_FAILURE);
@@ -545,13 +587,21 @@ void init_syslog()
 void daemonize_server()
 {
 	int fd;
-	long i;
+	unsigned long i;
 	struct sigaction act;
+	struct rlimit rlim;
 
-	for (i = 3; i < sysconf(_SC_OPEN_MAX); i++) {
+	/* get the resource limit for max number of file descriptors */
+	if (getrlimit(RLIMIT_NOFILE, &rlim) == -1) {
+		exit(EXIT_FAILURE);
+	}
+
+	/* close all file descriptor except stdin(0), stdout(1) and stderr(2)*/
+	for (i = 3; i < rlim.rlim_max; i++) {
 		close(i);
 	}
 
+	/* reset all signal handlers to their default */
 	act.sa_handler = SIG_DFL;
 	for (i = 0; i < _NSIG; i++) {
 		sigaction(i, &act, NULL);
@@ -579,10 +629,12 @@ void daemonize_server()
 		exit(EXIT_SUCCESS);
 	}
 
+	/* close stdin(0), stdout(1) and stderr(2)*/
 	for (i = 0; i < 3; i++) {
 		close(i);
 	}
 
+	/* connect /dev/null to stdin(0), stdout(1) and stderr(2)*/
 	if ((fd = open("/dev/null", O_RDWR)) == -1) {
 		exit(EXIT_FAILURE);
 	}
@@ -632,6 +684,7 @@ int main(int argc, char *argv[])
 	char listen_address[INET6_ADDRSTRLEN];
 	int listen_port, nthreads;
 
+	/* initialize variables with default values */
 	strncpy(listen_address, LISTEN_ADDRESS, INET6_ADDRSTRLEN);
 	listen_port = LISTEN_PORT;
 	nthreads = NTHREADS;
