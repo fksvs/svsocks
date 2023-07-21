@@ -23,11 +23,23 @@
 #define LISTEN_PORT 1080
 #define NTHREADS 1000
 
+#define USERNAME "svsocks"
+#define PASSWORD "1234"
+
 #define BUFF_SIZE 4096
 #define BACKLOG 10
 
-int serverfd;
-pthread_mutex_t server_mtx;
+struct server_t {
+	int serverfd;
+	int nthreads;
+	int listen_port;
+	char listen_address[INET6_ADDRSTRLEN];
+	char username[255];
+	char password[255];
+	pthread_mutex_t server_mtx;
+};
+
+struct server_t server;
 
 uint8_t ipv4_connect(int *hostfd, char *buffer)
 {
@@ -35,7 +47,7 @@ uint8_t ipv4_connect(int *hostfd, char *buffer)
 	uint32_t dst_addr;
 	uint16_t dst_port;
 
-	/* | dst.addr (4 octets) | dst.port (2 octets) |*/
+	/* | dst.addr (4 octets) | dst.port (2 octets) | */
 	memcpy(&dst_addr, &buffer[4], 4);
 	memcpy(&dst_port, &buffer[8], 2);
 
@@ -74,7 +86,7 @@ uint8_t domain_connect(int *hostfd, char *buffer)
 	uint16_t dst_port;
 	char port_addr[255];
 
-	/* | domain name length (1 octet) | domain name (variable) | dst.port (2 octets) */
+	/* | domain name length (1 octet) | domain name (variable) | dst.port (2 octets) | */
 	memset(domain_name, 0, 255);
 	domain_len = buffer[4];
 	memcpy(domain_name, &buffer[5], domain_len);
@@ -135,7 +147,7 @@ uint8_t ipv6_connect(int *hostfd, char *buffer)
 	uint8_t dst_addr[16];
 	uint16_t dst_port;
 
-	/* | dst.addr (16 octets) | dst.port (2 octets) |*/
+	/* | dst.addr (16 octets) | dst.port (2 octets) | */
 	memcpy(&dst_addr, &buffer[4], 16);
 	memcpy(&dst_port, &buffer[20], 2);
 
@@ -167,6 +179,53 @@ uint8_t ipv6_connect(int *hostfd, char *buffer)
 	return 0x00;
 }
 
+int userpass_auth(int clientfd)
+{
+	int total;
+	char buffer[BUFF_SIZE];
+	uint8_t version, ulen, uname[255], plen, passwd[255], status;
+
+	total = recv(clientfd, buffer, BUFF_SIZE, 0);
+	if (total <= 0) {
+		return -1;
+	}
+
+	/* | version | ulen | uname (1 to 255) | plen | passwd (1 to 255) | */
+	/* version should be 0x01 for subnegotiation */
+	version = buffer[0];
+	if (version != 0x01) {
+		return -1;
+	}
+	ulen = buffer[1];
+	memcpy(uname, &buffer[2], ulen);
+	plen = buffer[2 + ulen];
+	memcpy(passwd, &buffer[3 + ulen], plen);
+
+	status = 0xFF;
+	if (!strncmp(server.username, (const char *)uname, 255) &&
+	    !strncmp(server.password, (const char *)passwd, 255)) {
+		/* success */
+		status = 0x00;
+	}
+
+	/* | version | status | */
+	memset(buffer, 0, BUFF_SIZE);
+	buffer[0] = 0x01;
+	buffer[1] = status;
+
+	total = send(clientfd, buffer, 2, 0);
+	if (total == -1 || total != 2) {
+		return -1;
+	}
+
+	/* if not succeeded */
+	if (status == 0xFF) {
+		return -1;
+	}
+
+	return 0;
+}
+
 int method_negotiation(int clientfd)
 {
 	int total;
@@ -178,8 +237,7 @@ int method_negotiation(int clientfd)
 		return -1;
 	}
 
-
-	/* | version | nmethods | methods (1 to 255) |*/
+	/* | version | nmethods | methods (1 to 255) | */
 	/* socks version should be 0x05 for socks5 */
 	version = buffer[0];
 	if (version != 0x05) {
@@ -193,6 +251,9 @@ int method_negotiation(int clientfd)
 			/* no authentication */
 			choosen_method = 0x00;
 			break;
+		} else if (methods[i] == 0x02) {
+			/* username/password authentication */
+			choosen_method = 0x02;
 		}
 	}
 
@@ -208,6 +269,8 @@ int method_negotiation(int clientfd)
 	/* no acceptable methods, close conncetion */
 	if (choosen_method == 0xFF) {
 		return -1;
+	} else if (choosen_method == 0x02) {
+		return userpass_auth(clientfd);
 	}
 
 	return 0;
@@ -233,7 +296,7 @@ int process_request(int clientfd)
 	command = buffer[1];
 	atype = buffer[3];
 
-	/* CONNECT */
+	/* CONNECT command */
 	if (command == 0x01) {
 		switch (atype) {
 		case 0x01:
@@ -461,9 +524,9 @@ void *svsocks_worker(void *arg)
 	char client_addr[INET6_ADDRSTRLEN];
 
 	for (;;) {
-		pthread_mutex_lock(&server_mtx);
-		clientfd = accept(serverfd, (struct sockaddr *)&addr, &len);
-		pthread_mutex_unlock(&server_mtx);
+		pthread_mutex_lock(&server.server_mtx);
+		clientfd = accept(server.serverfd, (struct sockaddr *)&addr, &len);
+		pthread_mutex_unlock(&server.server_mtx);
 
 		if (clientfd == -1) {
 			continue;
@@ -476,19 +539,19 @@ void *svsocks_worker(void *arg)
 	}
 }
 
-void init_threads(int nthreads)
+void init_threads()
 {
 	int i, ret;
 	pthread_t tid;
 
-	ret = pthread_mutex_init(&server_mtx, NULL);
+	ret = pthread_mutex_init(&server.server_mtx, NULL);
 	if (ret != 0) {
 		syslog(LOG_ERR, "pthread_mutex_init error [%d] : could not initalize mutex",
 			__LINE__);
 		exit(EXIT_FAILURE);
 	}
 
-	for (i = 0; i < nthreads; i++) {
+	for (i = 0; i < server.nthreads; i++) {
 		ret = pthread_create(&tid, NULL, svsocks_worker, NULL);
 		if (ret != 0) {
 			syslog(LOG_ERR, "pthread_create error [%d] : %s",
@@ -498,40 +561,41 @@ void init_threads(int nthreads)
 	}
 }
 
-void init_socket(char *listen_addr, int listen_port)
+void init_socket()
 {
 	struct sockaddr_in6 addr;
 	int yes = 1, no = 0;
 
 	memset(&addr, 0, sizeof(struct sockaddr_in6));
 	addr.sin6_family = AF_INET6;
-	addr.sin6_port = htons(listen_port);
-	inet_pton(AF_INET6, listen_addr, &addr.sin6_addr.s6_addr);
+	addr.sin6_port = htons(server.listen_port);
+	inet_pton(AF_INET6, server.listen_address, &addr.sin6_addr.s6_addr);
 
-	if ((serverfd = socket(AF_INET6, SOCK_STREAM, 0)) == -1) {
+	if ((server.serverfd = socket(AF_INET6, SOCK_STREAM, 0)) == -1) {
 		syslog(LOG_ERR, "socket error [%d] : %s", __LINE__, strerror(errno));
 		exit(EXIT_FAILURE);
 	}
-	if (setsockopt(serverfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(int)) == -1) {
+	if (setsockopt(server.serverfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(int)) == -1) {
 		syslog(LOG_ERR, "setsockopt error [SO_REUSEADDR][%d] : %s",
 			__LINE__, strerror(errno));
-		close(serverfd);
+		close(server.serverfd);
 		exit(EXIT_FAILURE);
 	}
-	if (setsockopt(serverfd, IPPROTO_IPV6, IPV6_V6ONLY, &no, sizeof(int)) == -1) {
+	if (setsockopt(server.serverfd, IPPROTO_IPV6, IPV6_V6ONLY, &no, sizeof(int)) == -1) {
 		syslog(LOG_ERR, "setsockopt error [IPV6_V6ONLY][%d] : %s",
 			__LINE__, strerror(errno));
-		close(serverfd);
+		close(server.serverfd);
 		exit(EXIT_FAILURE);
 	}
-	if (bind(serverfd, (struct sockaddr *)&addr, sizeof(struct sockaddr_in6)) == -1) {
+	if (bind(server.serverfd, (struct sockaddr *)&addr,
+		sizeof(struct sockaddr_in6)) == -1) {
 		syslog(LOG_ERR, "bind error [%d] : %s", __LINE__, strerror(errno));
-		close(serverfd);
+		close(server.serverfd);
 		exit(EXIT_FAILURE);
 	}
-	if (listen(serverfd, BACKLOG) == -1) {
+	if (listen(server.serverfd, BACKLOG) == -1) {
 		syslog(LOG_ERR, "listen error [%d] : %s", __LINE__, strerror(errno));
-		close(serverfd);
+		close(server.serverfd);
 		exit(EXIT_FAILURE);
 	}
 }
@@ -653,24 +717,33 @@ void daemonize_server()
 
 void svsocks_usage()
 {
-	fprintf(stdout, "usage : ./svsocks -a [listen address]\
- -p [listen port] -n [number of threads]\n");
+	fprintf(stdout, "\n usage : ./svsocks [options]\n\n options:\n\
+\t-a [listen address] : listen address for incoming connections in IPv6 format\n\
+\t-p [listen port] : listen port for incoming connections\n\
+\t-n [number of threads] : number of threads for thread pool\n\
+\t-u [username] : username for username/password authentication\n\
+\t-p [password] : password for username/password authentication\n\n");
 }
 
-void arg_parser(int argc, char *argv[], char *listen_address,
-		int *listen_port, int *nthreads){
+void arg_parser(int argc, char *argv[]){
 	int opt;
 
-	while ((opt = getopt(argc, argv, "a:p:n:h")) != -1) {
+	while ((opt = getopt(argc, argv, "a:p:n:u:s:h")) != -1) {
 		switch (opt) {
 		case 'a':
-			strncpy(listen_address, optarg, INET6_ADDRSTRLEN);
+			strncpy(server.listen_address, optarg, INET6_ADDRSTRLEN);
 			break;
 		case 'p':
-			*listen_port = atoi(optarg);
+			server.listen_port = atoi(optarg);
 			break;
 		case 'n':
-			*nthreads = atoi(optarg);
+			server.nthreads = atoi(optarg);
+			break;
+		case 'u':
+			strncpy(server.username, optarg, 255);
+			break;
+		case 's':
+			strncpy(server.password, optarg, 255);
 			break;
 		case 'h':
 			svsocks_usage();
@@ -681,25 +754,24 @@ void arg_parser(int argc, char *argv[], char *listen_address,
 
 int main(int argc, char *argv[])
 {
-	char listen_address[INET6_ADDRSTRLEN];
-	int listen_port, nthreads;
-
 	/* initialize variables with default values */
-	strncpy(listen_address, LISTEN_ADDRESS, INET6_ADDRSTRLEN);
-	listen_port = LISTEN_PORT;
-	nthreads = NTHREADS;
+	strncpy(server.listen_address, LISTEN_ADDRESS, INET6_ADDRSTRLEN);
+	server.listen_port = LISTEN_PORT;
+	server.nthreads = NTHREADS;
+	strncpy(server.username, USERNAME, 255);
+	strncpy(server.password, PASSWORD, 255);
 
 	if (argc > 1) {
-		arg_parser(argc, argv, listen_address, &listen_port, &nthreads);
+		arg_parser(argc, argv);
 	}
 
 	daemonize_server();
 	init_syslog();
 	init_signal();
-	init_socket(listen_address, listen_port);
-	init_threads(nthreads);
+	init_socket();
+	init_threads();
 	syslog(LOG_INFO, "svsocks started. listening on [%s]:%d, total threads : %d",
-		listen_address, listen_port, nthreads);
+		server.listen_address, server.listen_port, server.nthreads);
 
 	for (;;) {
 		pause();
