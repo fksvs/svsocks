@@ -541,7 +541,7 @@ void *svsocks_worker(void *arg)
 
 void init_threads()
 {
-	int i, ret;
+	int ret;
 	pthread_t tid;
 
 	ret = pthread_mutex_init(&server.server_mtx, NULL);
@@ -551,7 +551,7 @@ void init_threads()
 		exit(EXIT_FAILURE);
 	}
 
-	for (i = 0; i < server.nthreads; i++) {
+	for (int i = 0; i < server.nthreads; i++) {
 		ret = pthread_create(&tid, NULL, svsocks_worker, NULL);
 		if (ret != 0) {
 			syslog(LOG_ERR, "pthread_create error [%d] : %s",
@@ -602,7 +602,6 @@ void init_socket()
 
 void signal_exit(int signum)
 {
-	long i;
 	struct rlimit rlim;
 
 	syslog(LOG_INFO, "closing svsocks, signal = %d", signum);
@@ -614,7 +613,7 @@ void signal_exit(int signum)
 	}
 
 	/* close all open file descriptors */
-	for (i = 0; i < rlim.rlim_max; i++) {
+	for (unsigned long int i = 0; i < rlim.rlim_max; i++) {
 		close(i);
 	}
 	exit(EXIT_SUCCESS);
@@ -651,7 +650,6 @@ void init_syslog()
 void daemonize_server()
 {
 	int fd;
-	unsigned long i;
 	struct sigaction act;
 	struct rlimit rlim;
 
@@ -661,13 +659,13 @@ void daemonize_server()
 	}
 
 	/* close all file descriptor except stdin(0), stdout(1) and stderr(2)*/
-	for (i = 3; i < rlim.rlim_max; i++) {
+	for (unsigned long int i = 3; i < rlim.rlim_max; i++) {
 		close(i);
 	}
 
 	/* reset all signal handlers to their default */
 	act.sa_handler = SIG_DFL;
-	for (i = 0; i < _NSIG; i++) {
+	for (unsigned long int i = 0; i < _NSIG; i++) {
 		sigaction(i, &act, NULL);
 	}
 
@@ -694,7 +692,7 @@ void daemonize_server()
 	}
 
 	/* close stdin(0), stdout(1) and stderr(2)*/
-	for (i = 0; i < 3; i++) {
+	for (int i = 0; i < 3; i++) {
 		close(i);
 	}
 
@@ -725,7 +723,8 @@ void svsocks_usage()
 \t-p [password] : password for username/password authentication\n\n");
 }
 
-void arg_parser(int argc, char *argv[]){
+void arg_parser(int argc, char *argv[])
+{
 	int opt;
 
 	while ((opt = getopt(argc, argv, "a:p:n:u:s:h")) != -1) {

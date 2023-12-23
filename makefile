@@ -1,7 +1,9 @@
 CC = gcc
 CFLAGS = -Wall -lpthread
 
-svsocks :
+svsocks : svsocks.c
 	$(CC) $(CFLAGS) -o svsocks svsocks.c
 
-.PHONY = clean
+.PHONY : clean
+clean :
+	rm -f svsocks
