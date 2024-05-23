@@ -6,3 +6,4 @@
 
 # ignore executables
 *.out
+svsocks
