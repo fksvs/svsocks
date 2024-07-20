@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS = -Wall -lpthread
+CFLAGS = -Wall -Wextra -Werror -Wpedantic -lpthread
 
 svsocks : svsocks.c
 	$(CC) $(CFLAGS) -o svsocks svsocks.c
