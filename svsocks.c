@@ -276,6 +276,32 @@ int method_negotiation(int clientfd)
 	return 0;
 }
 
+uint8_t connect_command(int *hostfd, char *buffer, uint8_t atype)
+{
+	uint8_t reply;
+
+	switch (atype) {
+	case 0x01:
+		/* IPv4 address */
+		reply = ipv4_connect(hostfd, buffer);
+		break;
+	case 0x03:
+		/* domain name address*/
+		reply = domain_connect(hostfd, buffer);
+		break;
+	case 0x04:
+		/* IPv6 address */
+		reply = ipv6_connect(hostfd, buffer);
+		break;
+	default:
+		/* address type not supported */
+		reply = 0x08;
+		break;
+	}
+
+	return reply;
+}
+
 int process_request(int clientfd)
 {
 	int hostfd, total;
@@ -298,24 +324,7 @@ int process_request(int clientfd)
 
 	/* CONNECT command */
 	if (command == 0x01) {
-		switch (atype) {
-		case 0x01:
-			/* IPv4 address */
-			reply = ipv4_connect(&hostfd, buffer);
-			break;
-		case 0x03:
-			/* domain name address*/
-			reply = domain_connect(&hostfd, buffer);
-			break;
-		case 0x04:
-			/* IPv6 address */
-			reply = ipv6_connect(&hostfd, buffer);
-			break;
-		default:
-			/* address type not supported */
-			reply = 0x08;
-			break;
-		}
+		reply = connect_command(&hostfd, buffer, atype);
 	} else {
 		/* command not supported */
 		reply = 0x07;
