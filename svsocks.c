@@ -19,9 +19,12 @@
 #include <netdb.h>
 
 #define SYSLOG_IDENT "svsocks"
-#define LISTEN_ADDRESS "::ffff:127.0.0.1"
+#define LISTEN_ADDRESS_IPV4 "127.0.0.1"
+#define LISTEN_ADDRESS_IPV6 "::ffff:127.0.0.1"
 #define LISTEN_PORT 1080
 #define NTHREADS 1000
+#define DOMAIN_IPV4 4
+#define DOMAIN_IPV6 6
 
 #define USERNAME "svsocks"
 #define PASSWORD "1234"
@@ -32,8 +35,12 @@
 struct server_t {
 	int serverfd;
 	int nthreads;
+	int domain;
 	int listen_port;
-	char listen_address[INET6_ADDRSTRLEN];
+	union {
+		char ipv6[INET6_ADDRSTRLEN];
+		char ipv4[INET_ADDRSTRLEN];
+	} listen_address;
 	char username[255];
 	char password[255];
 	pthread_mutex_t server_mtx;
@@ -572,15 +579,33 @@ void init_threads()
 
 void init_socket()
 {
-	struct sockaddr_in6 addr;
-	int yes = 1, no = 0;
+	struct sockaddr_storage addr;
+	int domain, yes = 1, no = 0;
+	socklen_t addr_size;
 
-	memset(&addr, 0, sizeof(struct sockaddr_in6));
-	addr.sin6_family = AF_INET6;
-	addr.sin6_port = htons(server.listen_port);
-	inet_pton(AF_INET6, server.listen_address, &addr.sin6_addr.s6_addr);
+	if (server.domain == DOMAIN_IPV4) {
+		struct sockaddr_in *addr4 = (struct sockaddr_in *)&addr;
+		memset(addr4, 0, sizeof(struct sockaddr_in));
 
-	if ((server.serverfd = socket(AF_INET6, SOCK_STREAM, 0)) == -1) {
+		domain = AF_INET;
+		addr_size = sizeof(struct sockaddr_in);
+
+		addr4->sin_family = AF_INET;
+		addr4->sin_port = htons(server.listen_port);
+		inet_pton(AF_INET, server.listen_address.ipv4, &addr4->sin_addr.s_addr);
+	} else {
+		struct sockaddr_in6 *addr6 = (struct sockaddr_in6 *)&addr;
+		memset(addr6, 0, sizeof(struct sockaddr_in6));
+
+		domain = AF_INET6;
+		addr_size = sizeof(struct sockaddr_in6);
+
+		addr6->sin6_family = AF_INET6;
+		addr6->sin6_port = htons(server.listen_port);
+		inet_pton(AF_INET6, server.listen_address.ipv6, &addr6->sin6_addr.s6_addr);
+	}
+
+	if ((server.serverfd = socket(domain, SOCK_STREAM, 0)) == -1) {
 		syslog(LOG_ERR, "socket error [%d] : %s", __LINE__, strerror(errno));
 		exit(EXIT_FAILURE);
 	}
@@ -590,14 +615,17 @@ void init_socket()
 		close(server.serverfd);
 		exit(EXIT_FAILURE);
 	}
-	if (setsockopt(server.serverfd, IPPROTO_IPV6, IPV6_V6ONLY, &no, sizeof(int)) == -1) {
-		syslog(LOG_ERR, "setsockopt error [IPV6_V6ONLY][%d] : %s",
-			__LINE__, strerror(errno));
-		close(server.serverfd);
-		exit(EXIT_FAILURE);
+
+	if (server.domain == DOMAIN_IPV6) {
+		if (setsockopt(server.serverfd, IPPROTO_IPV6, IPV6_V6ONLY, &no,
+				sizeof(int)) == -1) {
+			syslog(LOG_ERR, "setsockopt error [IPV6_V6ONLY][%d] : %s",
+				__LINE__, strerror(errno));
+			close(server.serverfd);
+			exit(EXIT_FAILURE);
+		}
 	}
-	if (bind(server.serverfd, (struct sockaddr *)&addr,
-		sizeof(struct sockaddr_in6)) == -1) {
+	if (bind(server.serverfd, (struct sockaddr *)&addr, addr_size) == -1) {
 		syslog(LOG_ERR, "bind error [%d] : %s", __LINE__, strerror(errno));
 		close(server.serverfd);
 		exit(EXIT_FAILURE);
@@ -724,22 +752,34 @@ void daemonize_server()
 
 void svsocks_usage()
 {
-	fprintf(stdout, "\n usage : ./svsocks [options]\n\n options:\n\
-\t-a [listen address] : listen address for incoming connections in IPv6 format\n\
-\t-p [listen port] : listen port for incoming connections\n\
-\t-n [number of threads] : number of threads for thread pool\n\
-\t-u [username] : username for username/password authentication\n\
-\t-p [password] : password for username/password authentication\n\n");
+	fprintf(stdout,
+			"\nUsage: ./svsocks [options]\n\n"
+			"Options:\n"
+			"  -6                     Use IPv6 protocol.\n"
+			"  -a [listen address]    Specify the address for incoming connections.\n"
+			"                         (Use the appropriate address format.)\n"
+			"  -p [listen port]       Specify the port for incoming connections.\n"
+			"  -n [number of threads] Specify the number of threads for the thread pool.\n"
+			"  -u [username]          Username for username/password authentication.\n"
+			"  -P [password]          Password for username/password authentication.\n\n"
+			);
 }
 
 void arg_parser(int argc, char *argv[])
 {
 	int opt;
 
-	while ((opt = getopt(argc, argv, "a:p:n:u:s:h")) != -1) {
+	while ((opt = getopt(argc, argv, "6a:p:n:u:s:h")) != -1) {
 		switch (opt) {
+		case '6':
+			server.domain = DOMAIN_IPV6;
+			break;
 		case 'a':
-			strncpy(server.listen_address, optarg, INET6_ADDRSTRLEN);
+			if (server.domain == DOMAIN_IPV4) {
+				strncpy(server.listen_address.ipv4, optarg, INET_ADDRSTRLEN);
+			} else {
+				strncpy(server.listen_address.ipv6, optarg, INET6_ADDRSTRLEN);
+			}
 			break;
 		case 'p':
 			server.listen_port = atoi(optarg);
@@ -763,7 +803,8 @@ void arg_parser(int argc, char *argv[])
 int main(int argc, char *argv[])
 {
 	/* initialize variables with default values */
-	strncpy(server.listen_address, LISTEN_ADDRESS, INET6_ADDRSTRLEN);
+	server.domain = DOMAIN_IPV4;
+	strncpy(server.listen_address.ipv4, LISTEN_ADDRESS_IPV4, INET_ADDRSTRLEN);
 	server.listen_port = LISTEN_PORT;
 	server.nthreads = NTHREADS;
 	strncpy(server.username, USERNAME, 255);
@@ -779,7 +820,8 @@ int main(int argc, char *argv[])
 	init_socket();
 	init_threads();
 	syslog(LOG_INFO, "svsocks started. listening on [%s]:%d, total threads : %d",
-		server.listen_address, server.listen_port, server.nthreads);
+		(server.domain == DOMAIN_IPV4 ? server.listen_address.ipv4 :
+		 server.listen_address.ipv6), server.listen_port, server.nthreads);
 
 	for (;;) {
 		pause();
