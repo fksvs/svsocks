@@ -1,13 +1,14 @@
 SVSOCKS - SOCKS5 server
 ==========================
 
-svsocks is a lightweight and fast SOCKS5 server.
+**svsocks** is a lightweight and fast SOCKS5 server.
 
 ## Table of Contents
 
 1. [Features](#features)
 2. [Installation](#installation)
 3. [Usage](#usage)
+4. [Contributing](#contributing)
 4. [License](#license)
 
 ## Features
@@ -45,15 +46,24 @@ make
 ```console
 usage: ./svsocks [options]
 ```
-
 #### Options:
-- -a, [listen address] : Set the listen address for incoming connections in IPv6 format.
-- -p, [listen port] : Set the listen port for incoming connections.
-- -n, [number of threads]: Set the number of threads to be used in the thread pool.
-- -u, [username] : Set username for username/password authentication.
-- -s, [password] : Set password for username/password authentication.
+- `-6`: Use IPv6 protocol.
+- `-a [listen address]` : Specify the address for incoming connections.  (Use the appropriate address format.)
+- `-p [listen port]` : Specify the port for incoming connections.
+- `-n [number of threads]` : Specify the number of threads for the thread pool.
+- `-u [username]` : Username for username/password authentication.
+- `-P [password]`  : Password for username/password authentication.
 
-Default values can be changed in the source code as defined by macros.
+#### Example
+
+Start the server on a specific address and port with a custom number of threads:
+```console
+./svsocks -a 192.168.1.100 -p 5000 -n 1000
+```
+
+## Contributing
+
+Pull requests are welcome. For bug fixes and small improvements, please submit a pull request. For major changes, please open an issue first to discuss what you would like to change.
 
 ## License
 

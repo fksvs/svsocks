@@ -753,15 +753,15 @@ void daemonize_server()
 void svsocks_usage()
 {
 	fprintf(stdout,
-			"\nUsage: ./svsocks [options]\n\n"
-			"Options:\n"
-			"  -6                     Use IPv6 protocol.\n"
-			"  -a [listen address]    Specify the address for incoming connections.\n"
-			"                         (Use the appropriate address format.)\n"
-			"  -p [listen port]       Specify the port for incoming connections.\n"
-			"  -n [number of threads] Specify the number of threads for the thread pool.\n"
-			"  -u [username]          Username for username/password authentication.\n"
-			"  -P [password]          Password for username/password authentication.\n\n"
+			"\nusage: ./svsocks [options]\n\n"
+			"options:\n"
+			"  -6                     : use IPv6 protocol.\n"
+			"  -a [listen address]    : specify the address for incoming connections.\n"
+			"                           (use the appropriate address format.)\n"
+			"  -p [listen port]       : specify the port for incoming connections.\n"
+			"  -n [number of threads] : specify the number of threads for the thread pool.\n"
+			"  -u [username]          : username for username/password authentication.\n"
+			"  -P [password]          : password for username/password authentication.\n\n"
 			);
 }
 
