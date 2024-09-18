@@ -354,12 +354,13 @@ int process_request(int clientfd)
 
 int log_session(int clientfd, int hostfd)
 {
-	struct sockaddr_in6 client_addr;
+	struct sockaddr_storage client_addr;
 	struct sockaddr_storage host_addr;
-	socklen_t client_len = sizeof(struct sockaddr_in6);
-	socklen_t host_len = sizeof(struct sockaddr_storage), host_port;
+	socklen_t client_len = sizeof(struct sockaddr_storage);
+	socklen_t host_len = sizeof(struct sockaddr_storage);
 	char client_ip[INET6_ADDRSTRLEN], host_ip[INET6_ADDRSTRLEN];
-	
+	int client_port, host_port;
+
 	if (getpeername(clientfd, (struct sockaddr *)&client_addr, &client_len) == -1) {
 		return -1;
 	}
@@ -377,9 +378,17 @@ int log_session(int clientfd, int hostfd)
 		inet_ntop(AF_INET6, &host_ipv6->sin6_addr, host_ip, INET6_ADDRSTRLEN);
 	}
 
-	inet_ntop(AF_INET6, &client_addr.sin6_addr, client_ip, INET6_ADDRSTRLEN);
-	syslog(LOG_INFO, "[%s]:%d connected to [%s]:%d",
-		client_ip, ntohs(client_addr.sin6_port), host_ip, host_port);
+	if (server.domain == DOMAIN_IPV4) {
+		struct sockaddr_in *addr4 = (struct sockaddr_in *)&client_addr;
+		client_port = ntohs(addr4->sin_port);
+		inet_ntop(AF_INET, &addr4->sin_addr, client_ip, INET6_ADDRSTRLEN);
+	} else {
+		struct sockaddr_in6 *addr6 = (struct sockaddr_in6 *)&client_addr;
+		client_port = ntohs(addr6->sin6_port);
+		inet_ntop(AF_INET6, &addr6->sin6_addr, client_ip, INET6_ADDRSTRLEN);
+	}
+
+	syslog(LOG_INFO, "[%s]:%d connected to [%s]:%d", client_ip, client_port, host_ip, host_port);
 
 	return 0;
 }
@@ -536,22 +545,40 @@ void *svsocks_worker()
 {
 	int clientfd;
 	socklen_t len = sizeof(struct sockaddr_in6);
-	struct sockaddr_in6 addr;
+	struct sockaddr_storage addr;
 	char client_addr[INET6_ADDRSTRLEN];
+	int client_port;
 
 	for (;;) {
 		pthread_mutex_lock(&server.server_mtx);
-		clientfd = accept(server.serverfd, (struct sockaddr *)&addr, &len);
+		if (server.domain == DOMAIN_IPV4) {
+			struct sockaddr_in *addr4 = (struct sockaddr_in *)&addr;
+			memset(addr4, 0, sizeof(struct sockaddr_in));
+
+			clientfd = accept(server.serverfd, (struct sockaddr *)&addr, &len);
+			if (clientfd == -1) {
+				continue;
+			}
+
+			inet_ntop(AF_INET, &addr4->sin_addr, client_addr, INET6_ADDRSTRLEN);
+			client_port = ntohs(addr4->sin_port);
+		} else {
+			struct sockaddr_in6 *addr6 = (struct sockaddr_in6 *)&addr;
+			memset(addr6, 0, sizeof(struct sockaddr_in6));
+
+			clientfd = accept(server.serverfd, (struct sockaddr *)&addr, &len);
+			if (clientfd == -1) {
+				continue;
+			}
+
+			inet_ntop(AF_INET6, &addr6->sin6_addr, client_addr, INET6_ADDRSTRLEN);
+			client_port = ntohs(addr6->sin6_port);
+		}
 		pthread_mutex_unlock(&server.server_mtx);
 
-		if (clientfd == -1) {
-			continue;
-		}
-
-		inet_ntop(AF_INET6, &addr.sin6_addr.s6_addr, client_addr, INET6_ADDRSTRLEN);
-		syslog(LOG_INFO, "[%s]:%d connected", client_addr, ntohs(addr.sin6_port));
+		syslog(LOG_INFO, "[%s]:%d connected", client_addr, client_port);
 		handle_client(clientfd);
-		syslog(LOG_INFO, "[%s]:%d disconnected", client_addr, ntohs(addr.sin6_port));
+		syslog(LOG_INFO, "[%s]:%d disconnected", client_addr, client_port);
 	}
 }
 
