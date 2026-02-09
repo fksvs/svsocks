@@ -541,7 +541,7 @@ int handle_client(int clientfd)
 	return 0;
 }
 
-void *svsocks_worker()
+void *svsocks_worker(void *arg)
 {
 	int clientfd;
 	socklen_t len = sizeof(struct sockaddr_in6);
